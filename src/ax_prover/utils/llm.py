@@ -140,6 +140,14 @@ def _is_transient_error(exc: BaseException) -> bool:
     return status == 429 or status >= 500
 
 
+def _uses_openai_platform(llm: BaseChatModel) -> bool:
+    """True only for OpenAI's own API, where `strict` tool schemas are required."""
+    if not isinstance(llm, ChatOpenAI):
+        return False
+    base_url = getattr(llm, "openai_api_base", None) or os.environ.get("OPENAI_BASE_URL", "")
+    return not base_url or "api.openai.com" in str(base_url)
+
+
 class LLMClient:
     """Dynamically create a Runnable to invoke LLMs with structured output, tool calling and retry.
 
@@ -169,6 +177,7 @@ class LLMClient:
         """Initialize the LLMClient with a configuration."""
         self._base_llm: BaseChatModel = create_llm(config)
         self._retry_config: dict = config.retry_config
+        self._strict_tools: bool = _uses_openai_platform(self._base_llm)
 
     @property
     def profile(self) -> dict:
@@ -214,9 +223,11 @@ class LLMClient:
         model: Runnable = self._base_llm
 
         if tools:
-            # OpenAI requires strict=True when combining tools with structured output
-            # other providers default to None (omit the field)
-            strict = True if isinstance(self._base_llm, ChatOpenAI) and output_schema else None
+            # api.openai.com requires strict=True when combining tools with structured output.
+            # OpenAI-*compatible* servers do not, and vLLM silently drops `response_format`
+            # when a tool is strict (measured with DeepSeek-V4-Pro, vLLM 0.29): every
+            # proposal then comes back as prose and fails schema validation.
+            strict = True if self._strict_tools else None
             model = self._base_llm.bind_tools(tools, strict=strict)
 
         if output_schema:

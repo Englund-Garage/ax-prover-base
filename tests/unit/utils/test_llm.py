@@ -143,3 +143,42 @@ class TestCreateLlmProviderKwargs:
         llm = create_llm(config)
         assert llm.betas == ["structured-outputs-2025-11-13"]
         assert llm.thinking == {"type": "enabled", "budget_tokens": 1024}
+
+
+class TestStrictToolsPerEndpoint:
+    """`strict` tool schemas are an OpenAI-platform requirement, not an OpenAI-*protocol* one.
+
+    Measured 2026-09-18 on DeepSeek-V4-Pro served by vLLM 0.29: with `strict: true` on a
+    bound tool, the server silently ignores `response_format: json_schema` and answers in
+    prose, so every proposal fails schema validation. Without `strict` the same request
+    returns valid JSON. api.openai.com is the only endpoint that *requires* strict when
+    tools and structured output are combined.
+    """
+
+    def _client(self, monkeypatch, **provider_config):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        return LLMClient(LLMConfig(model="openai:gpt-5.5", provider_config=provider_config))
+
+    def _captured_strict(self, monkeypatch, client):
+        seen = {}
+
+        def fake_bind_tools(self_llm, tools, strict=None, **kwargs):
+            seen["strict"] = strict
+            return RunnableLambda(lambda _: AIMessage(content="{}"))
+
+        # ChatOpenAI is a pydantic model (no ad-hoc attributes): patch the class, not the instance.
+        monkeypatch.setattr(type(client._base_llm), "bind_tools", fake_bind_tools)
+        client._get_runnable(tools=[object()], output_schema=None)
+        return seen["strict"]
+
+    def test_openai_platform_uses_strict(self, monkeypatch):
+        assert self._captured_strict(monkeypatch, self._client(monkeypatch)) is True
+
+    def test_openai_compatible_server_does_not_use_strict(self, monkeypatch):
+        client = self._client(monkeypatch, base_url="https://v4pro.example.invalid/v1")
+        assert self._captured_strict(monkeypatch, client) is None
+
+    def test_explicit_override_wins(self, monkeypatch):
+        client = self._client(monkeypatch, base_url="https://v4pro.example.invalid/v1")
+        client._strict_tools = True
+        assert self._captured_strict(monkeypatch, client) is True
