@@ -182,3 +182,30 @@ class TestStrictToolsPerEndpoint:
         client = self._client(monkeypatch, base_url="https://v4pro.example.invalid/v1")
         client._strict_tools = True
         assert self._captured_strict(monkeypatch, client) is True
+
+
+class TestStructuredOutputPerEndpoint:
+    """On OpenAI-compatible servers, structured output goes through a plain json_schema
+    `response_format` dict. The pydantic-class form makes langchain-openai use the SDK's
+    `.parse()` path, which refuses non-strict tools ("Only `strict` function tools can be
+    auto-parsed") — and strict tools are exactly what vLLM cannot combine with a response
+    schema. ax-prover validates `response.text` itself, so the dict form loses nothing."""
+
+    def _client(self, monkeypatch, **provider_config):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        return LLMClient(LLMConfig(model="openai:gpt-5.5", provider_config=provider_config))
+
+    def test_openai_platform_binds_pydantic_class(self, monkeypatch):
+        from ax_prover.models.proving import ProverResult
+
+        kwargs = self._client(monkeypatch)._structured_output_bind_kwargs(ProverResult)
+        assert kwargs == {"response_format": ProverResult}
+
+    def test_openai_compatible_server_binds_json_schema_dict(self, monkeypatch):
+        from ax_prover.models.proving import ProverResult
+
+        client = self._client(monkeypatch, base_url="https://v4pro.example.invalid/v1")
+        rf = client._structured_output_bind_kwargs(ProverResult)["response_format"]
+        assert rf["type"] == "json_schema"
+        assert rf["json_schema"]["name"] == "ProverResult"
+        assert rf["json_schema"]["schema"] == ProverResult.model_json_schema()

@@ -252,7 +252,7 @@ class LLMClient:
             return _google_structured_kwargs(schema.model_json_schema())
 
         if isinstance(self._base_llm, ChatOpenAI):
-            return _openai_structured_kwargs(schema)
+            return _openai_structured_kwargs(schema, platform=self._strict_tools)
 
         raise NotImplementedError(
             f"Structured output bind kwargs not implemented for {type(self._base_llm).__name__}."
@@ -280,5 +280,20 @@ def _google_structured_kwargs(schema: type[BaseModel]) -> dict:
     }
 
 
-def _openai_structured_kwargs(schema: type[BaseModel]) -> dict:
-    return {"response_format": schema}
+def _openai_structured_kwargs(schema: type[BaseModel], platform: bool = True) -> dict:
+    """Constrain output to a JSON schema.
+
+    On api.openai.com the pydantic class is passed through so langchain-openai uses the
+    SDK's `.parse()` path (which requires strict tools — see `_uses_openai_platform`). An
+    OpenAI-compatible server gets the plain `json_schema` dict instead: `.parse()` refuses
+    non-strict tools, and vLLM drops the schema when tools are strict. Callers validate
+    `response.text` themselves, so nothing is lost.
+    """
+    if platform:
+        return {"response_format": schema}
+    return {
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()},
+        }
+    }
