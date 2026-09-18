@@ -36,6 +36,24 @@ _PROVIDER_API_KEY_ENV = {
 }
 
 
+# Anthropic Messages-API concepts. `init_chat_model` forwards unknown kwargs into
+# `model_kwargs`, and the OpenAI / Google SDKs then reject them at call time
+# ("AsyncCompletions.parse() got an unexpected keyword argument 'betas'"). Since the
+# packaged defaults carry both, and a `--config` merge cannot remove a default key,
+# every non-Anthropic model used to crash on its first call (#45).
+_ANTHROPIC_ONLY_KWARGS = frozenset({"betas", "thinking"})
+
+
+def _provider_kwargs(provider: str | None, provider_config: dict) -> dict:
+    """Return the provider_config entries that this provider's SDK accepts."""
+    if provider == "anthropic":
+        return dict(provider_config)
+    dropped = sorted(k for k in provider_config if k in _ANTHROPIC_ONLY_KWARGS)
+    if dropped:
+        logger.debug(f"Dropping Anthropic-only kwargs {dropped} for provider {provider!r}")
+    return {k: v for k, v in provider_config.items() if k not in _ANTHROPIC_ONLY_KWARGS}
+
+
 def create_llm(config: LLMConfig) -> BaseChatModel:
     """Create an LLM instance from configuration."""
     provider = config.model.split(":")[0] if ":" in config.model else None
@@ -45,7 +63,7 @@ def create_llm(config: LLMConfig) -> BaseChatModel:
 
     return init_chat_model(
         config.model,
-        **config.provider_config,
+        **_provider_kwargs(provider, config.provider_config),
     )
 
 

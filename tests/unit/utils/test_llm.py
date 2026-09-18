@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
 from ax_prover.config import LLMConfig
-from ax_prover.utils.llm import LLMClient, _is_transient_error
+from ax_prover.utils.llm import LLMClient, _is_transient_error, create_llm
 
 
 def _status_error(cls, status: int) -> Exception:
@@ -89,3 +89,57 @@ class TestClientRetry:
             await client.ainvoke([])
 
         assert len(attempts) == 1
+
+
+class TestCreateLlmProviderKwargs:
+    """Anthropic-only provider kwargs never reach a non-Anthropic SDK.
+
+    `betas` and `thinking` are Anthropic Messages-API concepts. LangChain's `init_chat_model`
+    forwards unknown kwargs into `model_kwargs`, and the OpenAI SDK then rejects them at
+    call time (`AsyncCompletions.parse() got an unexpected keyword argument 'betas'`) — which is
+    how the packaged defaults (`betas: [structured-outputs-…]`, `thinking: {…}`) broke every
+    `openai:` model, because a `--config` merge cannot remove a default key (#45).
+    """
+
+    ANTHROPIC_ONLY = {
+        "betas": ["structured-outputs-2025-11-13"],
+        "thinking": {"type": "enabled", "budget_tokens": 1024},
+    }
+
+    def test_openai_model_drops_anthropic_only_kwargs(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        config = LLMConfig(
+            model="openai:deepseek-v4-pro",
+            provider_config={
+                **self.ANTHROPIC_ONLY,
+                "base_url": "https://example.invalid/v1",
+                "max_tokens": 131072,
+                "temperature": 1.0,
+                "reasoning_effort": "max",
+            },
+        )
+        llm = create_llm(config)
+        assert "betas" not in llm.model_kwargs
+        assert "thinking" not in llm.model_kwargs
+        assert llm.max_tokens == 131072
+        assert llm.temperature == 1.0
+        assert llm.reasoning_effort == "max"
+
+    def test_google_model_drops_anthropic_only_kwargs(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+        config = LLMConfig(
+            model="google_genai:gemini-2.5-pro", provider_config=dict(self.ANTHROPIC_ONLY)
+        )
+        llm = create_llm(config)
+        dumped = llm.model_dump()
+        assert "betas" not in str(dumped.get("model_kwargs", {}))
+        assert "thinking" not in str(dumped.get("model_kwargs", {}))
+
+    def test_anthropic_model_keeps_betas_and_thinking(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        config = LLMConfig(
+            model="anthropic:claude-opus-5", provider_config=dict(self.ANTHROPIC_ONLY)
+        )
+        llm = create_llm(config)
+        assert llm.betas == ["structured-outputs-2025-11-13"]
+        assert llm.thinking == {"type": "enabled", "budget_tokens": 1024}
