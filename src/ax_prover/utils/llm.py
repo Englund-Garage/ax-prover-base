@@ -291,9 +291,15 @@ def _openai_structured_kwargs(schema: type[BaseModel], platform: bool = True) ->
     """
     if platform:
         return {"response_format": schema}
+    # Via `extra_body`, not `response_format`: langchain-openai routes any json_schema
+    # `response_format` (class or dict) through the SDK's `.parse()`, whose input validation
+    # rejects non-strict tools. `extra_body` is merged into the request JSON unseen by the SDK,
+    # so the server still receives `response_format` and enforces the schema.
     return {
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()},
+        "extra_body": {
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()},
+            }
         }
     }

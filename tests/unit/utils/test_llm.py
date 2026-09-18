@@ -205,7 +205,9 @@ class TestStructuredOutputPerEndpoint:
         from ax_prover.models.proving import ProverResult
 
         client = self._client(monkeypatch, base_url="https://v4pro.example.invalid/v1")
-        rf = client._structured_output_bind_kwargs(ProverResult)["response_format"]
+        kwargs = client._structured_output_bind_kwargs(ProverResult)
+        assert "response_format" not in kwargs  # would route through the SDK's .parse()
+        rf = kwargs["extra_body"]["response_format"]
         assert rf["type"] == "json_schema"
         assert rf["json_schema"]["name"] == "ProverResult"
         assert rf["json_schema"]["schema"] == ProverResult.model_json_schema()
